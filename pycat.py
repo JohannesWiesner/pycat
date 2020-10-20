@@ -6,8 +6,6 @@ Python Adapations to CAT12 functions.
 import numpy as np
 import pandas as pd
 
-import re
-
 import xml.etree.cElementTree as ET
 import os
 
@@ -18,6 +16,7 @@ from adjustText import adjust_text
 
 import seaborn as sns
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 
 def get_TIV(sample,sub_dir_name='anat_1'):
     '''Extract TIV from CAT12 XML Files.
@@ -57,7 +56,6 @@ def get_TIV(sample,sub_dir_name='anat_1'):
         sub_dir = os.path.dirname(os.path.dirname(filepath))
         sub_dirs.append(sub_dir)
     
-
     # walk through all subdirectories, search for 'report' folder and get “cat_*.xml 
     # files that contain TIV information
     xml_filepath_list = []
@@ -88,22 +86,31 @@ def get_TIV(sample,sub_dir_name='anat_1'):
     
     return sample_df
 
-# TO-DO: color mark outliers (e.g. 'Patients', 'Controls')
-def check_sample_homogeneity(imgs,mask_img,record_ids,average_type='mean',metric='euclidean',fence_factor = 1.5,dst_dir=None,filename=None,memory=None):
-    '''Check MRI Image Sample Homogeneity using Distance Measurement.
+def check_sample_homogeneity(imgs,mask_img,participant_ids,group_labels=None,idx_annotations=True,
+                             average_type='mean',metric='euclidean',fence_factor=1.5,dst_dir=None,
+                             filename=None,memory=None):
+    '''Check sMRI Image Sample Homogeneity using Distance Measurement.
     
     Parameters
     ----------
     imgs: list, pd.Series
         A list of image paths.
     
-    mask_img: 3D Niimg-like object
-        A mask image to mask images to brain space.
+    mask_img: 3D Niimg-like object, None
+        A mask image to mask images to brain space. If None, default settings
+        of nilearn.input_data.NiftiMasker will be used.
         
-    record_ids: pd.Series
+    participant_ids: pd.Series
         A series containing unique ids for each subject. The unique ids
         are used for marking outliers in the boxplot.
     
+    group_labels: pd.Series
+        A series containing labels for different groups (e.g. 'patient', 'control')
+    
+    idx_annotations: Boolean
+        If True, annotations will be plotted as row indices. In addition a textbox
+        will be plotted that maps each index to the corresponding participant ID.
+        
     average_type: str
         How should the average subject be calculated? Choose between 'mean'
         or 'median'.
@@ -115,7 +122,7 @@ def check_sample_homogeneity(imgs,mask_img,record_ids,average_type='mean',metric
     fence_factor: float
         The factor with which the interquartile range is multiplied with to 
         obtain lower and upper bounds used for identifying outliers.
-    
+        
     dst_dir: str or None
         A path pointing to the directory where the plot should be saved.
         If None, the plot is not saved.
@@ -123,7 +130,7 @@ def check_sample_homogeneity(imgs,mask_img,record_ids,average_type='mean',metric
     filename: str
         The name of the saved file.
     
-    memory: instance of joblib.Memory or string
+    memory: instance of joblib.Memory, string or None
         Used to cache the masking process. By default, no caching is done. 
         If a string is given, it is the path to the caching directory.
     
@@ -131,15 +138,14 @@ def check_sample_homogeneity(imgs,mask_img,record_ids,average_type='mean',metric
     -----
     See: http://www.neuro.uni-jena.de/vbm/check-sample-homogeneity/
     '''
-    if not isinstance(imgs, np.ndarray): 
-        niftimasker = NiftiMasker(mask_img=mask_img,
-                                  memory=memory)
-        imgs_data = niftimasker.fit_transform(imgs)
     
+    if not isinstance(imgs, np.ndarray): 
+        niftimasker = NiftiMasker(mask_img=mask_img,memory=memory)
+        imgs_data = niftimasker.fit_transform(imgs)
     else: 
         imgs_data = imgs
         
-    # calculate the mean data. create an array of sample size with this mean
+    # Calculate the average. Create an array of sample size with this average
     # data. 
     if average_type == 'mean':
         avg_img_data = np.mean(imgs_data,axis=0,keepdims=True)
@@ -148,7 +154,7 @@ def check_sample_homogeneity(imgs,mask_img,record_ids,average_type='mean',metric
         
     # calculate the distance from each subject to the average subject.
     distances = cdist(imgs_data,avg_img_data,metric=metric).ravel()
-
+    
     # get outliers
     interquartile_range = iqr(distances)
     q1 = np.quantile(distances,0.25)
@@ -156,23 +162,56 @@ def check_sample_homogeneity(imgs,mask_img,record_ids,average_type='mean',metric
     lower_bound = q1 - fence_factor * interquartile_range
     upper_bound = q3 + fence_factor * interquartile_range
     
-    outlier_indices = np.where((distances < lower_bound) | (distances > upper_bound),True,False)
-    outlier_ids = record_ids[outlier_indices]
-    outlier_values = distances[outlier_indices]
+    outlier_booleans = np.where((distances < lower_bound) | (distances > upper_bound),True,False)
+    outlier_ids = participant_ids[outlier_booleans]
+    outlier_values = distances[outlier_booleans]
+    outlier_indices = np.where(outlier_booleans)[0]
     
     # boxplot data
     plt.figure()
-    boxplot = sns.boxplot(distances)
+    flierprops = dict(marker='o',markerfacecolor='0.75',markersize=2.5,linestyle='none')
+    boxplot = sns.boxplot(x=distances,whis=fence_factor,flierprops=flierprops)
     boxplot.set_xlabel('Distance to Average')
-    sns.despine(left=True)
     
-    # annotate boxplot with IDs of outliers
-    texts = [plt.text(x=outlier_values[idx],y=0,s=outlier_id,rotation=90) for idx,outlier_id in enumerate(outlier_ids)]
+    if idx_annotations:
+        # use row indices as annotations
+        texts = [plt.text(x=outlier_values[idx],y=0,s=outlier_idx) for idx,outlier_idx in enumerate(outlier_indices)]
+        
+        # create textbox that maps row indices to participant ids
+        textbox_strings = [str(outlier_idx) + ': ' + outlier_id for outlier_idx,outlier_id in zip(outlier_indices.tolist(),outlier_ids.tolist())]
+        sep = '\n'
+        textbox_content = sep.join(textbox_strings)
+        textbox_props = dict(boxstyle='round',facecolor='white',alpha=0.5)
+        plt.gcf().text(1.0,1.0,textbox_content,fontsize=8,verticalalignment='top',bbox=textbox_props)
+        
+    else:
+        # use participant ids as annotations
+        texts = [plt.text(x=outlier_values[idx],y=0,s=outlier_id) for idx,outlier_id in enumerate(outlier_ids)]
     
-    # BUGFIX: When adjusting, text seems to be outside the figure (disable despine to see this effect.)
-    # Text should be close to the points. It should be allowed to shift on the x axis but NOT on the y-axis.
-    adjust_text(texts,arrowprops=dict(arrowstyle="->", color='black', lw=0.75))
+    # if group labels are provided, color texts in different colors for each 
+    # group and add legend
+    if group_labels is not None:
+        
+        unique_group_labels = group_labels.unique()
+        current_palette = sns.color_palette()
+        colors = []
+        
+        for idx in range(0,len(unique_group_labels)):
+            colors.append(current_palette[idx])
+        
+        label_color_dict = dict(zip(unique_group_labels,colors))
+        
+        outlier_groups = group_labels[outlier_booleans]
     
+        for label,text in zip(outlier_groups,texts):
+            text.set_color(label_color_dict[label])
+        
+        patches = [mpatches.Patch(color=color, label=label) for color,label in zip(colors,unique_group_labels)]
+        plt.legend(handles=patches)
+    
+    # use adjustText to properly place annotations
+    adjust_text(texts,arrowprops=dict(arrowstyle="-",color='black',lw=0.75))
+
     plt.tight_layout()
     
     if dst_dir:
