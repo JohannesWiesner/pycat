@@ -20,7 +20,7 @@ import matplotlib.patches as mpatches
 
 def get_TIV(sample,sub_dir_name='anat_1'):
     '''Extract TIV from CAT12 XML Files.
-    This function does provide the same functionality as CAT12's third
+    This function provides the same functionality as CAT12's third
     module called "Estimate Total Intracranial Volume (TIV)".
     
     Parameters
@@ -89,7 +89,9 @@ def get_TIV(sample,sub_dir_name='anat_1'):
 def check_sample_homogeneity(imgs,mask_img,participant_ids,group_labels=None,idx_annotations=True,
                              average_type='mean',metric='euclidean',fence_factor=1.5,dst_dir=None,
                              filename=None,memory=None):
-    '''Check sMRI Image Sample Homogeneity using Distance Measurement.
+    '''Check sMRI Image Sample Homogeneity using Distance Measurement. This 
+    function provides similar functionality as CAT12's fourth module called 
+    "Check Sample".
     
     Parameters
     ----------
