@@ -1,14 +1,14 @@
 """
-Python Adapations to CAT12 functions.
+Python adapations of CAT12's third module (Estimate Total Intracranial
+Volume (TIV)) and fourth module (Check Sample).
 @author: jwiesner
 """
 
 import numpy as np
 import pandas as pd
-
-import xml.etree.cElementTree as ET
 import os
-
+import xml.etree.cElementTree as ET
+from nisupply import get_filepath_df
 from nilearn.input_data import NiftiMasker
 from scipy.spatial.distance import cdist
 from scipy.stats import iqr
@@ -18,73 +18,109 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
-def get_TIV(sample,sub_dir_name='anat_1'):
-    '''Extract TIV from CAT12 XML Files.
-    This function provides the same functionality as CAT12's third
-    module called "Estimate Total Intracranial Volume (TIV)".
+def _get_single_report_dir(filepath):
+    '''Create a path to a report directory based on a filepath that points
+    to a file which was preprocessed using CAT12. This function assumes that 
+    each file is placed in a directory called 'mri' that is on the same level 
+    as a directory called 'report' (following CAT12s convention for saving the 
+    preprocessing output)'''
+    
+    filepath = os.path.normpath(filepath)
+    participant_dir = os.path.dirname(os.path.dirname(filepath))
+    report_dir = os.path.join(participant_dir,'report')
+    
+    if not os.path.isdir(report_dir):
+        raise ValueError('This report directory does not exist: {}'.format(report_dir))
+    
+    return report_dir
+
+def _check_for_same_parent_dir(filepath_df):
+    '''Check if all filepaths have the same parent directory'''
+    
+    filepaths = filepath_df['filepath'].map(os.path.dirname)
+    filepaths_array = filepaths.to_numpy() 
+    same_parent_dir = (filepaths_array[0] == filepaths_array).all()
+    
+    if same_parent_dir == False:
+        raise ValueError('Not all your files have the same parent directory')
+
+def _get_single_tiv(cat_xml_filepath):
+    '''Extract TIV value from one "cat_*.xml" file as created by CAT12'''
+    
+    root = ET.parse(cat_xml_filepath).getroot()
+        
+    for measures in root.findall("./subjectmeasures"):
+        for vol in measures.findall(".vol_TIV"):
+            vol_tiv = vol.text
+    
+    return vol_tiv
+    
+def _strip_cat_12_tags(cat_12_filepath):
+    '''Take a filepath and return the filename without any tags that are added by CAT12'''
+    
+    cat_12_tags = ['mwp1','cat_']
+    filename = os.path.splitext(os.path.basename(cat_12_filepath))[0]
+    
+    for tag in cat_12_tags:
+        filename = filename.replace(tag,'')
+    
+    return filename
+
+def add_cat_12_measures(filepath_df,bids_conformity=False):
+    '''Add CAT12 information based on an input data frame which contains 
+    both participant IDs corresponding filepaths that point to CAT12 preprocessed images. 
     
     Parameters
     ----------
-    sample_csv_path: str, or pd.DataFrame
-        Path to the sample .csv file, or sample DataFrame
-    
-    sub_dir_name: str
-        Name of the directory for each subject, where CAT12 XML File 
-        is stored. The name of the directory has to be specified without
-        the path separator.
-    
+    filepath_df : pd.DataFrame
+        A dataframe that contains a column named 'participant_id' and
+        a column named 'filepath' as created from nisupply module.
+        
+    bids_conformity : boolean, optional
+        If bids_conformity is False, it is assumed that all preprocessed
+        subject images are in the same 'mri' directory. One path for the report 
+        directory is created using the first filepath in the dataframe. For this, 
+        check that all files have the same parent directory. 
+        
+        If bids_conformity is True, it is assumed that the 
+        preprocessed images are found in a BIDS-conform folder structure.
+        
+        The default is False.
+
     Returns
     -------
-    sample_df: pd.DataFrame
-        pandas DataFrame with the added TIV column.
-    
+    filepath_df: pd.DataFrame
+        The input dataframe with three added columns (filename,cat_xml_filepath,
+        and tiv)
+
     '''
-
-    if isinstance(sample,str):
-        sample_df = pd.read_csv(sample)
-    else:
-        sample_df = sample
+    
+    if bids_conformity == True:
+        report_dir = filepath_df['filepath'].map(_get_single_report_dir)
         
-    sub_dirs = []
-    
-
-    # Note: it is assumed that file is nested in a top-directory
-    # that again contains a folder called 'report'. For that, go
-    # two directories 'up' to get this top-directory.
-    for filepath in sample_df['filepath']:
-        filepath = os.path.normpath(filepath)
-        sub_dir = os.path.dirname(os.path.dirname(filepath))
-        sub_dirs.append(sub_dir)
-    
-    # walk through all subdirectories, search for 'report' folder and get “cat_*.xml 
-    # files that contain TIV information
-    xml_filepath_list = []
-    
-    for sub_dir in sub_dirs:
-        for i in os.scandir(sub_dir):
-            if i.is_dir() and i.path.endswith('report'):
-                for (paths, dirs, files) in os.walk(i):
-                    for file in files:
-                        if file.lower().endswith('.xml'):
-                            xml_filepath_list.append(os.path.join(paths, file))
-                     
-                        
-    # extract TIV information from each CAT12 XML file
-    tiv_list = []
-    
-    for xml_path in xml_filepath_list:
+    elif bids_conformity == False:
+        _check_for_same_parent_dir(filepath_df)
+        report_dir = _get_single_report_dir(filepath_df.loc[filepath_df.index[0],'filepath'])
         
-        root = ET.parse(xml_path).getroot()
-        
-        for measures in root.findall("./subjectmeasures"):
-            for vol in measures.findall(".vol_TIV"):
-                vol_tiv = vol.text
-                tiv_list.append(vol_tiv)
+    # find "cat_*.xml" files
+    cat_xml_filepath_df = get_filepath_df(participant_ids=filepath_df['participant_id'],
+                                          src_dir=report_dir,
+                                          file_suffix='.xml',
+                                          file_prefix='cat',
+                                          preceding_dirs='report')
     
-    # add TIV column to sample data frame
-    sample_df['tiv'] = tiv_list
+    # extract TIV info from each "cat_*.xml" file
+    cat_xml_filepath_df['tiv'] = cat_xml_filepath_df['filepath'].map(_get_single_tiv)
     
-    return sample_df
+    # obtain original filenames without tags that where added by CAT12
+    # in both the input filepath df and cat_xml_filepath_df
+    cat_xml_filepath_df['filename'] = cat_xml_filepath_df['filepath'].map(_strip_cat_12_tags)
+    filepath_df['filename'] = filepath_df['filepath'].map(_strip_cat_12_tags)
+    
+    # merge original filepath_df with cat_xml_filepath_df based on participant_id and original_filename
+    filepath_df = pd.merge(filepath_df,cat_xml_filepath_df,on=['participant_id','filename'])
+    
+    return filepath_df
 
 def check_sample_homogeneity(imgs,mask_img,participant_ids,group_labels=None,idx_annotations=True,
                              average_type='mean',metric='euclidean',fence_factor=1.5,dst_dir=None,
@@ -224,3 +260,6 @@ def check_sample_homogeneity(imgs,mask_img,participant_ids,group_labels=None,idx
         plt.savefig(dst_path,dpi=600)
 
     return outlier_indices
+
+if __name__ == '__main__':
+    pass
