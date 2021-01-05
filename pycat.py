@@ -122,6 +122,8 @@ def add_cat_12_measures(filepath_df,bids_conformity=False):
     
     return filepath_df
 
+# FIXME: currently does not provided the exact logic that CAT12 has 
+# Exactly imitate what CAT12 is doing and use plotly/dash to imitate the interface from CAT12
 def check_sample_homogeneity(imgs,mask_img,participant_ids,group_labels=None,idx_annotations=True,
                              average_type='mean',metric='euclidean',fence_factor=1.5,dst_dir=None,
                              filename=None,memory=None):
