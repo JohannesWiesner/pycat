@@ -3,6 +3,9 @@
 A python package that imitates functions from the [Computational Anatomy Toolbox - CAT12](http://www.neuro.uni-jena.de/cat/).
 For more information, see the documentation of [the third and fourth module in the CAT12 manual](http://www.neuro.uni-jena.de/cat12/CAT12-Manual.pdf).
 
+## Motivation
+This package does not replace CAT12 itself. It's purpose is to provide functions written in Python in order to faciliate the data analysis of images that were preprocessed using CAT12.
+
 ## Functions
 
 `pycat.get_TIV()`: Extract TIV values from every .XML file that CAT12 produces. This function works as desired.
