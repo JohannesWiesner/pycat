@@ -7,7 +7,8 @@ Volume (TIV)) and fourth module (Check Sample).
 import numpy as np
 import pandas as pd
 import os
-import xml.etree.cElementTree as ET
+import xmltodict
+from warnings import warn
 from nisupply import get_filepath_df
 from nilearn.input_data import NiftiMasker
 from scipy.spatial.distance import cdist
@@ -20,10 +21,7 @@ import matplotlib.patches as mpatches
 
 def _get_single_report_dir(filepath):
     '''Create a path to a report directory based on a filepath that points
-    to a file which was preprocessed using CAT12. This function assumes that 
-    each file is placed in a directory called 'mri' that is on the same level 
-    as a directory called 'report' (following CAT12s convention for saving the 
-    preprocessing output)'''
+    to a file which was preprocessed using CAT12'''
     
     filepath = os.path.normpath(filepath)
     participant_dir = os.path.dirname(os.path.dirname(filepath))
@@ -44,17 +42,6 @@ def _check_for_same_parent_dir(filepath_df):
     if same_parent_dir == False:
         raise ValueError('Not all your files have the same parent directory')
 
-def _get_single_tiv(cat_xml_filepath):
-    '''Extract TIV value from one "cat_*.xml" file as created by CAT12'''
-    
-    root = ET.parse(cat_xml_filepath).getroot()
-        
-    for measures in root.findall("./subjectmeasures"):
-        for vol in measures.findall(".vol_TIV"):
-            vol_tiv = vol.text
-    
-    return vol_tiv
-    
 def _strip_cat_12_tags(cat_12_filepath):
     '''Take a filepath and return the filename without any tags that are added by CAT12'''
     
@@ -66,22 +53,55 @@ def _strip_cat_12_tags(cat_12_filepath):
     
     return filename
 
+def _parse_xml_files_to_dicts(cat_xml_filepaths):
+    '''parse the information from a list-like object of "cat_*.xml" filepaths to 
+    a list of dictionaries for more easy data handling'''
+
+    cat_xml_dicts = []
+    
+    for cat_xml_filepath in cat_xml_filepaths:
+        with open(cat_xml_filepath) as file:
+            cat_xml_dict = xmltodict.parse(file.read())
+            cat_xml_dicts.append(cat_xml_dict)
+    
+    return cat_xml_dicts
+
+def _get_tivs_from_xml_dicts(cat_xml_dicts):
+    '''Extract TIV values from dictionaries produces by _parse_xml_files_to_dict'''
+    
+    vol_tivs = []
+    
+    for cat_xml_dict in cat_xml_dicts:
+        try:
+            vol_TIV = cat_xml_dict['S']['subjectmeasures']['vol_TIV']
+            vol_tivs.append(vol_TIV)
+        except KeyError:
+            warn('Could not extract TIV')
+    
+    return vol_tivs
+
 def add_cat_12_measures(filepath_df,bids_conformity=False):
     '''Add CAT12 information based on an input data frame which contains 
-    both participant IDs corresponding filepaths that point to CAT12 preprocessed images. 
+    both participant IDs and corresponding filepaths that point to CAT12 preprocessed images
+    This function assumes that the corresponding .xml file for each file can 
+    be found in a directory '../report'. 
     
     Parameters
     ----------
     filepath_df : pd.DataFrame
         A dataframe that contains a column named 'participant_id' and
-        a column named 'filepath' as created from nisupply module.
+        a column named 'filepath' as created from nisupply module. All
+        files in the column 'filepath' should be located in a 'mri' directory
+        produced by CAT12.
         
     bids_conformity : boolean, optional
         If bids_conformity is False, it is assumed that all preprocessed
-        subject images are in the same 'mri' directory. One path for the report 
-        directory is created using the first filepath in the dataframe. For this, 
-        check that all files have the same parent directory. 
-        
+        files can be found a directory called 'mri' that is on the same level 
+        as a directory called 'report' (following CAT12s convention for saving the 
+        preprocessing output). One path for the report directory is created using 
+        the first filepath in the dataframe. For this, the function will check 
+        first that all files have the same 'mri' parent directory. 
+
         If bids_conformity is True, it is assumed that the 
         preprocessed images are found in a BIDS-conform folder structure.
         
@@ -92,6 +112,12 @@ def add_cat_12_measures(filepath_df,bids_conformity=False):
     filepath_df: pd.DataFrame
         The input dataframe with three added columns (filename,cat_xml_filepath,
         and tiv)
+    
+    Notes
+    -----
+    In contrast to CAT12 this function only respects the .xml files for all files
+    in the 'mri' folder. CAT12 instead analyses all .xml files in the report folder 
+    and thus can also return NaN values for files that are in the 'err' directory.
 
     '''
     
@@ -102,23 +128,35 @@ def add_cat_12_measures(filepath_df,bids_conformity=False):
         _check_for_same_parent_dir(filepath_df)
         report_dir = _get_single_report_dir(filepath_df.loc[filepath_df.index[0],'filepath'])
         
-    # find "cat_*.xml" files
     cat_xml_filepath_df = get_filepath_df(participant_ids=filepath_df['participant_id'],
                                           src_dir=report_dir,
                                           file_suffix='.xml',
                                           file_prefix='cat',
                                           preceding_dirs='report')
     
-    # extract TIV info from each "cat_*.xml" file
-    cat_xml_filepath_df['tiv'] = cat_xml_filepath_df['filepath'].map(_get_single_tiv)
-    
     # obtain original filenames without tags that where added by CAT12
     # in both the input filepath df and cat_xml_filepath_df
     cat_xml_filepath_df['filename'] = cat_xml_filepath_df['filepath'].map(_strip_cat_12_tags)
     filepath_df['filename'] = filepath_df['filepath'].map(_strip_cat_12_tags)
     
+    # rename 'filepath' column in cat_xml_filepath_df to make the difference
+    # of between cat_xml_filepath_df['filepath] and filepath_df['filepath'] explicit
+    cat_xml_filepath_df.rename(columns={'filepath':'cat_xml_filepath'},inplace=True)
+    
     # merge original filepath_df with cat_xml_filepath_df based on participant_id and original_filename
+    # This ensures that only measures for files that are in the 'mri' folder will be extracted.
     filepath_df = pd.merge(filepath_df,cat_xml_filepath_df,on=['participant_id','filename'])
+    
+    # delete 'filename' column since it's purpose was only for merging filepath_df
+    # and cat_xml_filepath df
+    filepath_df.drop('filename',axis=1,inplace=True)
+    
+    # parse all 'cat_*.xml' files to dictionaries for more easy data handling
+    cat_xml_dicts = _parse_xml_files_to_dicts(filepath_df['cat_xml_filepath'])
+    
+    # extract TIV values from dicts and add to filepath_df
+    vol_tivs = _get_tivs_from_xml_dicts(cat_xml_dicts)
+    filepath_df['vol_tiv'] = vol_tivs
     
     return filepath_df
 
