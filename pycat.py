@@ -1,6 +1,7 @@
 """
 Python adapations of CAT12's third module (Estimate Total Intracranial
-Volume (TIV)) and fourth module (Check Sample).
+Volume (TIV)) and fourth module (Check Sample). This package has nisupply
+as a dependency.
 @author: jwiesner
 """
 
@@ -10,6 +11,7 @@ import os
 import xmltodict
 from warnings import warn
 from nisupply import get_filepath_df
+import re
 from nilearn.input_data import NiftiMasker
 from scipy.spatial.distance import cdist
 from scipy.stats import iqr
@@ -67,7 +69,7 @@ def _parse_xml_files_to_dicts(cat_xml_filepaths):
     return cat_xml_dicts
 
 def _get_tivs_from_xml_dicts(cat_xml_dicts):
-    '''Extract TIV values from dictionaries produces by _parse_xml_files_to_dict'''
+    '''Extract TIV values from dictionaries produced by _parse_xml_files_to_dict'''
     
     vol_tivs = []
     
@@ -77,8 +79,29 @@ def _get_tivs_from_xml_dicts(cat_xml_dicts):
             vol_tivs.append(vol_TIV)
         except KeyError:
             warn('Could not extract TIV')
+            vol_tivs.append(np.nan)
     
     return vol_tivs
+
+def _get_weighted_average_iqrs_from_xml_dicts(cat_xml_dicts):
+    '''Extract Weighted Average IQRS from dictionaries produced by _parse_xml_files_to_dict'''
+
+    pattern = '(Image Quality Rating \(IQR\):) (\d\d.\d\d)% \(([A-Z](-|\+)?)\)'
+    weighted_average_iqrs = []
+    
+    for cat_xml_dict in cat_xml_dicts:
+        
+        try:
+            catlog = cat_xml_dict['S']['catlog']['item']
+            for e in catlog:
+                if e.startswith('Image Quality Rating (IQR)'):
+                    match = re.search(pattern,e)
+                    weighted_average_iqr = match.group(2)
+                    weighted_average_iqrs.append(float(weighted_average_iqr))
+        except:
+            weighted_average_iqrs.append(np.nan)
+        
+    return weighted_average_iqrs
 
 def add_cat_12_measures(filepath_df,bids_conformity=False):
     '''Add CAT12 information based on an input data frame which contains 
@@ -129,7 +152,7 @@ def add_cat_12_measures(filepath_df,bids_conformity=False):
         report_dir = _get_single_report_dir(filepath_df.loc[filepath_df.index[0],'filepath'])
         
     cat_xml_filepath_df = get_filepath_df(participant_ids=filepath_df['participant_id'],
-                                          src_dir=report_dir,
+                                          src_dirs=report_dir,
                                           file_suffix='.xml',
                                           file_prefix='cat',
                                           preceding_dirs='report')
@@ -158,13 +181,17 @@ def add_cat_12_measures(filepath_df,bids_conformity=False):
     vol_tivs = _get_tivs_from_xml_dicts(cat_xml_dicts)
     filepath_df['vol_tiv'] = vol_tivs
     
+    # extract weighted average IQRS from dicts and add to filepath_df
+    weighted_average_iqrs = _get_weighted_average_iqrs_from_xml_dicts(cat_xml_dicts)
+    filepath_df['weighted_average_iqr'] = weighted_average_iqrs
+    
     return filepath_df
 
 # FIXME: currently does not provided the exact logic that CAT12 has 
 # Exactly imitate what CAT12 is doing and use plotly/dash to imitate the interface from CAT12
 def check_sample_homogeneity(imgs,mask_img,participant_ids,group_labels=None,idx_annotations=True,
-                             average_type='mean',metric='euclidean',fence_factor=1.5,dst_dir=None,
-                             filename=None,memory=None):
+                             average_type='mean',metric='euclidean',fence_factor=1.5,title=None,
+                             dst_dir=None,filename=None,**niftimasker_kwargs):
     '''Check sMRI Image Sample Homogeneity using Distance Measurement. This 
     function provides similar functionality as CAT12's fourth module called 
     "Check Sample".
@@ -200,6 +227,9 @@ def check_sample_homogeneity(imgs,mask_img,participant_ids,group_labels=None,idx
     fence_factor: float
         The factor with which the interquartile range is multiplied with to 
         obtain lower and upper bounds used for identifying outliers.
+    
+    title: str or None
+        Title for the boxplot
         
     dst_dir: str or None
         A path pointing to the directory where the plot should be saved.
@@ -208,17 +238,16 @@ def check_sample_homogeneity(imgs,mask_img,participant_ids,group_labels=None,idx
     filename: str
         The name of the saved file.
     
-    memory: instance of joblib.Memory, string or None
-        Used to cache the masking process. By default, no caching is done. 
-        If a string is given, it is the path to the caching directory.
+    niftimasker_kwargs: key-value pairs
+        Further arguments that are passed to nilearn.input_data.NiftiMasker    
     
     Notes
     -----
     See: http://www.neuro.uni-jena.de/vbm/check-sample-homogeneity/
     '''
     
-    if not isinstance(imgs, np.ndarray): 
-        niftimasker = NiftiMasker(mask_img=mask_img,memory=memory)
+    if not isinstance(imgs,np.ndarray): 
+        niftimasker = NiftiMasker(mask_img=mask_img,**niftimasker_kwargs)
         imgs_data = niftimasker.fit_transform(imgs)
     else: 
         imgs_data = imgs
@@ -250,6 +279,9 @@ def check_sample_homogeneity(imgs,mask_img,participant_ids,group_labels=None,idx
     flierprops = dict(marker='o',markerfacecolor='0.75',markersize=2.5,linestyle='none')
     boxplot = sns.boxplot(x=distances,whis=fence_factor,flierprops=flierprops)
     boxplot.set_xlabel('Distance to Average')
+    
+    if title:
+        boxplot.set_title(title)
     
     if idx_annotations:
         # use row indices as annotations
@@ -289,7 +321,6 @@ def check_sample_homogeneity(imgs,mask_img,participant_ids,group_labels=None,idx
     
     # use adjustText to properly place annotations
     adjust_text(texts,arrowprops=dict(arrowstyle="-",color='black',lw=0.75))
-
     plt.tight_layout()
     
     if dst_dir:
@@ -299,7 +330,7 @@ def check_sample_homogeneity(imgs,mask_img,participant_ids,group_labels=None,idx
         dst_path = dst_dir + filename
         plt.savefig(dst_path,dpi=600)
 
-    return outlier_indices
+    return outlier_indices,outlier_ids,imgs_data
 
 if __name__ == '__main__':
     pass
